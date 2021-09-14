@@ -119,6 +119,7 @@ rabbit_promote() {
         return $OCF_ERR_GENERIC
     fi
     touch "${OCF_RESKEY_cfg_dir}/master"
+    crm_master -v 666
     return $OCF_SUCCESS
 }
 
@@ -173,6 +174,8 @@ rabbit_monitor() {
         crm_master -v -INFINITY
         rm -f "${OCF_RESKEY_cfg_dir}/master"
         return $OCF_SUCCESS
+    else
+        crm_master -v 666
     fi
 
     if [ -f "${OCF_RESKEY_cfg_dir}/master" ]; then
