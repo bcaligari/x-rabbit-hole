@@ -87,11 +87,17 @@ rabbit_start() {
 
     touch "${OCF_RESKEY_state}"
     mkdir -p "${OCF_RESKEY_cfg_dir}"
+
     if [ -f "${OCF_RESKEY_cfg_dir}/fail_start" ]; then
         return $OCF_ERR_GENERIC
     fi
 
-    crm_master -v 666
+    if [ -f "${OCF_RESKEY_cfg_dir}/unpromotable" ]; then
+        crm_master -v -INFINITY
+    else
+        crm_master -v 666
+    fi
+
     return $OCF_SUCCESS
 }
 
@@ -118,8 +124,15 @@ rabbit_promote() {
 
 rabbit_demote() {
     if [ -f "${OCF_RESKEY_cfg_dir}/master" ]; then
-        rm "${OCF_RESKEY_cfg_dir}/master"
+        rm -f "${OCF_RESKEY_cfg_dir}/master"
     fi
+
+    if [ -f "${OCF_RESKEY_cfg_dir}/unpromotable" ]; then
+        crm_master -v -INFINITY
+    else
+        crm_master -v 666
+    fi
+
     return $OCF_SUCCESS
 }
 
