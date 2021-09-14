@@ -1,0 +1,232 @@
+#!/bin/sh
+#
+# Rabbit is a pointless little multi-state capable test Resource Agent.
+#
+# Adapted from the Dummy OCF RA.
+#
+
+#######################################################################
+# Initialization:
+
+: ${OCF_FUNCTIONS=${OCF_ROOT}/resource.d/heartbeat/.ocf-shellfuncs}
+. ${OCF_FUNCTIONS}
+: ${__OCF_ACTION=$1}
+
+#######################################################################
+
+meta_data() {
+    cat <<END
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="Rabbit" version="1.0">
+<version>1.0</version>
+
+<longdesc lang="en">
+This is a Rabbit Resource Agent.
+</longdesc>
+<shortdesc lang="en">Rabbit resource agent</shortdesc>
+
+<parameters>
+
+<parameter name="fake" unique="0">
+<longdesc lang="en">
+Fake attribute that can be changed to cause a reload
+</longdesc>
+<shortdesc lang="en">Fake attribute that can be changed to cause a reload</shortdesc>
+<content type="string" default="dummy" />
+</parameter>
+
+<parameter name="op_sleep" unique="1">
+<longdesc lang="en">
+Number of seconds to sleep during operations.  This can be used to test how
+the cluster reacts to operation timeouts.
+</longdesc>
+<shortdesc lang="en">Operation sleep duration in seconds.</shortdesc>
+<content type="string" default="0" />
+</parameter>
+
+</parameters>
+
+<actions>
+<action name="start"        timeout="20" />
+<action name="stop"         timeout="20" />
+<action name="promote"      timeout="20" />
+<action name="demote"       timeout="20" />
+<action name="monitor"      timeout="20" interval="10" depth="0"/>
+<action name="monitor"      timeout="20" interval="20" role="Slave" />
+<action name="monitor"      timeout="20" interval="10" role="Master" />
+<action name="reload"       timeout="20" />
+<action name="migrate_to"   timeout="20" />
+<action name="migrate_from" timeout="20" />
+<action name="validate-all" timeout="20" />
+<action name="meta-data"    timeout="5" />
+</actions>
+</resource-agent>
+END
+}
+
+#######################################################################
+
+# don't exit on TERM, to test that lrmd makes sure that we do exit
+trap sigterm_handler TERM
+sigterm_handler() {
+    ocf_log info "They use TERM to bring us down. No such luck."
+    return
+}
+
+rabbit_usage() {
+    cat <<END
+usage: $0 {start|stop|monitor|promote|demote|migrate_to|migrate_from|validate-all|meta-data}
+
+Expects to have a fully populated OCF RA-compliant environment set.
+END
+}
+
+rabbit_start() {
+    rabbit_monitor
+
+    touch "${OCF_RESKEY_state}"
+    mkdir -p "${OCF_RESKEY_cfg_dir}"
+    if [ -f "${OCF_RESKEY_cfg_dir}/fail_start" ]; then
+        return $OCF_ERR_GENERIC
+    fi
+
+    crm_master -v 666
+    return $OCF_SUCCESS
+}
+
+rabbit_stop() {
+    if [ -f "${OCF_RESKEY_cfg_dir}/fail_stop" ]; then
+        return $OCF_ERR_GENERIC
+    fi
+    rabbit_monitor --force
+    if [ $? -eq $OCF_SUCCESS ]; then
+        rm ${OCF_RESKEY_state}
+    fi
+    rm -f "${VERIFY_SERIALIZED_FILE}"
+    return $OCF_SUCCESS
+}
+
+rabbit_promote() {
+    if [ -f "${OCF_RESKEY_cfg_dir}/unpromotable" ]; then
+        crm_master -v -INFINITY
+        return $OCF_ERR_GENERIC
+    fi
+    touch "${OCF_RESKEY_cfg_dir}/master"
+    return $OCF_SUCCESS
+}
+
+rabbit_demote() {
+    if [ -f "${OCF_RESKEY_cfg_dir}/master" ]; then
+        rm "${OCF_RESKEY_cfg_dir}/master"
+    fi
+    return $OCF_SUCCESS
+}
+
+rabbit_monitor() {
+    # Monitor _MUST!_ differentiate correctly between running
+    # (SUCCESS), failed (ERROR) or _cleanly_ stopped (NOT RUNNING).
+    # That is THREE states, not just yes/no.
+
+    if [ $OCF_RESKEY_op_sleep -ne 0 ]; then
+        if [ "$1" = "" -a -f "${VERIFY_SERIALIZED_FILE}" ]; then
+            # two monitor ops have occurred at the same time.
+            # this is to verify a condition in the lrmd regression tests.
+            ocf_log err "$VERIFY_SERIALIZED_FILE exists already"
+            return $OCF_ERR_GENERIC
+        fi
+
+        touch "${VERIFY_SERIALIZED_FILE}"
+        sleep ${OCF_RESKEY_op_sleep}
+        rm "${VERIFY_SERIALIZED_FILE}"
+    fi
+    
+    if [ ! -f "${OCF_RESKEY_state}" ]; then
+        return $OCF_NOT_RUNNING
+    fi
+
+    if [ -f "${OCF_RESKEY_cfg_dir}/crash" ]; then
+        rm -f "${OCF_RESKEY_cfg_dir}/crash"
+        return $OCF_ERR_GENERIC
+    fi
+
+    if [ -f "${OCF_RESKEY_cfg_dir}/burn" ]; then
+        rm -f "${OCF_RESKEY_cfg_dir}/burn"
+        touch "${OCF_RESKEY_cfg_dir}/fail_start"
+        return $OCF_ERR_GENERIC
+    fi
+
+    if [ -f "${OCF_RESKEY_cfg_dir}/unpromotable" ]; then
+        crm_master -v -INFINITY
+        rm -f "${OCF_RESKEY_cfg_dir}/master"
+        return $OCF_SUCCESS
+    fi
+
+    if [ -f "${OCF_RESKEY_cfg_dir}/master" ]; then
+        return $OCF_RUNNING_MASTER
+    fi
+
+    return $OCF_SUCCESS
+}
+
+rabbit_validate() {
+    
+    # Is the state directory writable? 
+    state_dir=`dirname "$OCF_RESKEY_state"`
+    touch "$state_dir/$$"
+    if [ $? -ne 0 ]; then
+        return $OCF_ERR_ARGS
+    fi
+    rm "$state_dir/$$"
+
+    return $OCF_SUCCESS
+}
+
+: ${OCF_RESKEY_fake=rabbit}
+: ${OCF_RESKEY_op_sleep=0}
+: ${OCF_RESKEY_CRM_meta_interval=0}
+: ${OCF_RESKEY_CRM_meta_globally_unique:="false"}
+
+if [ -z "$OCF_RESKEY_state" ]; then
+    OCF_RESKEY_cfg_dir="${HA_VARRUN%%/}/Rabbit-${OCF_RESOURCE_INSTANCE}.cfg"
+fi
+
+if [ -z "$OCF_RESKEY_state" ]; then
+    OCF_RESKEY_state="${HA_VARRUN%%/}/Rabbit-${OCF_RESOURCE_INSTANCE}.state"
+
+    if [ ${OCF_RESKEY_CRM_meta_globally_unique} = "false" ]; then
+        # Strip off the trailing clone marker (note + is not portable in sed)
+        OCF_RESKEY_state=`echo $OCF_RESKEY_state | sed s/:[0-9][0-9]*\.state/.state/`
+    fi
+fi
+VERIFY_SERIALIZED_FILE="${OCF_RESKEY_state}.serialized"
+
+case $__OCF_ACTION in
+meta-data)      meta_data
+                exit $OCF_SUCCESS
+                ;;
+start)          rabbit_start;;
+stop)           rabbit_stop;;
+monitor)        rabbit_monitor;;
+promote)        rabbit_promote;;
+demote)         rabbit_demote;;
+migrate_to)     ocf_log info "Migrating ${OCF_RESOURCE_INSTANCE} to ${OCF_RESKEY_CRM_meta_migrate_target}."
+                rabbit_stop
+                ;;
+migrate_from)   ocf_log info "Migrating ${OCF_RESOURCE_INSTANCE} from ${OCF_RESKEY_CRM_meta_migrate_source}."
+                rabbit_start
+                ;;
+reload)         ocf_log err "Reloading..."
+                rabbit_start
+                ;;
+validate-all)   rabbit_validate;;
+usage|help)     rabbit_usage
+                exit $OCF_SUCCESS
+                ;;
+*)              rabbit_usage
+                exit $OCF_ERR_UNIMPLEMENTED
+                ;;
+esac
+rc=$?
+ocf_log debug "${OCF_RESOURCE_INSTANCE} $__OCF_ACTION : $rc"
+exit $rc
