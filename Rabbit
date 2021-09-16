@@ -84,6 +84,12 @@ END
 
 rabbit_start() {
     rabbit_monitor
+    if [ $? =  $OCF_SUCCESS ]; then
+        return $OCF_SUCCESS
+    fi
+    if [ $? =  $OCF_RUNNING_MASTER ]; then
+        return $OCF_SUCCESS
+    fi
 
     touch "${OCF_RESKEY_state}"
     mkdir -p "${OCF_RESKEY_cfg_dir}"
